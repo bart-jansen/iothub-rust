@@ -2,7 +2,7 @@
 extern crate serde_derive;
 mod config;
 
-use native_tls::{TlsConnector, TlsStream};
+use native_tls::{TlsConnector, TlsStream, Protocol};
 use std::io::Write;
 use std::net::TcpStream;
 use std::fs::File;
@@ -14,7 +14,8 @@ use mqtt::{TopicName};
 use mqtt::control::variable_header::ConnectReturnCode;
 use clap::{Arg, App};
 use config::read_config;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, Sender, Receiver};
+use anyhow::Result;
 
 
 use yahoo_finance_api as yahoo;
@@ -25,10 +26,10 @@ fn connect(broker: String,
            password: String,
            client_id: String,
            verify_name: String)
-           -> TlsStream<TcpStream> {
-    let connector = TlsConnector::builder().build().unwrap();
-    let stream = TcpStream::connect(&broker).unwrap();
-    let mut stream = connector.connect(&verify_name, stream).unwrap();
+           -> Result<TlsStream<TcpStream>> {
+    let connector = TlsConnector::builder().min_protocol_version(Some(Protocol::Tlsv12)).build()?;
+    let stream = TcpStream::connect(&broker)?;
+    let mut stream = connector.connect(&verify_name, stream)?;
     let mut conn = ConnectPacket::new("MQTT", &client_id);
 
     conn.set_clean_session(true);
@@ -36,25 +37,25 @@ fn connect(broker: String,
     conn.set_password(Some(password.to_owned()));
     conn.set_client_identifier(client_id);
 
-    let mut buf = Vec::new();
-    conn.encode(&mut buf).unwrap();
-    stream.write_all(&buf[..]).unwrap();
-    let connack = ConnackPacket::decode(&mut stream).unwrap();
+    let mut buf = vec![];
+    conn.encode(&mut buf)?;
+    stream.write_all(&buf[..])?;
+    let connack = ConnackPacket::decode(&mut stream)?;
     if connack.connect_return_code() != ConnectReturnCode::ConnectionAccepted {
         panic!("Failed to connect to server, return code {:?}",
                connack.connect_return_code());
     }
-    return stream;
+    Ok(stream)
 }
 
 fn publish(stream: &mut TlsStream<TcpStream>, msg: String, topic: TopicName) {
     let packet = PublishPacket::new(topic, QoSWithPacketIdentifier::Level1(10), msg);
-    let mut buf = Vec::new();
+    let mut buf = vec![];
     packet.encode(&mut buf).unwrap();
     stream.write_all(&buf).unwrap();
 }
 
-fn main() {
+fn main() -> Result<()> {
 
     let matches = App::new("MQTT publisher")
         .version("0.2.0")
@@ -86,33 +87,27 @@ fn main() {
                              settings.mqtt.username,
                              settings.mqtt.password,
                              settings.mqtt.client_id,
-                             settings.mqtt.broker);
+                             settings.mqtt.broker)?;
 
 
     let ticker_symbol = matches.value_of("ticker_symbol").unwrap().to_owned();
-    let (tx, rx) = channel();
+    let (tx, rx): (Sender<(u64, f64)>, Receiver<(u64, f64)>) = channel();
 
     let writehandle = thread::spawn(move || {
         while let Ok(data) = rx.recv() {
             println!("received: {:?}", data);
+            let msg = format!("{{ \"timestamp\": {}, \"open\": {} }}", data.0, data.1);
+            publish(&mut stream, msg, topic_name.clone() );
         }
     });
 
     let readhandle = thread::spawn(move || {
         let ts = ticker_symbol;
+        let provider = yahoo::YahooConnector::new();
         let mut i = 0;
         loop {
             i += 1;
-            // let msg = format!("{}", i);
-            // println!("Sending message '{}' to topic: '{}'",
-            //          msg,
-            //          settings.mqtt.topic);
-            // publish(&mut stream, msg, topic_name.clone());
-            
-            
     
-            let provider = yahoo::YahooConnector::new();
-        
             if let Ok(response) = provider.get_latest_quotes(&ts, "1m") {
                 let quote = response.last_quote().unwrap();
                 let data = (quote.timestamp, quote.open);
@@ -120,19 +115,14 @@ fn main() {
                 println!("price {:?}", response.last_quote().unwrap().open);
                 tx.send(data).unwrap();
             }
+            else {
+                println!("Could not connect to Yahoo")
+            }
     
             thread::sleep(Duration::from_millis(3000));
-                
-            // get the latest quotes in 1 minute intervals
-            // let response = tokio_test::block_on(provider.get_latest_quotes("AAPL", "1m")).unwrap();
-            // extract just the latest valid quote summery
-            // including timestamp,open,close,high,low,volume
-            // let quote = response.last_quote().unwrap();
-            // let time: DateTime<Utc> =
-            //     DateTime::from(UNIX_EPOCH + Duration::from_secs(quote.timestamp));
-            // println!("At {} quote price of Apple was {}", time.to_rfc3339(), quote.close);
         }
     });
 
     readhandle.join().unwrap();
+    Ok(())
 }
