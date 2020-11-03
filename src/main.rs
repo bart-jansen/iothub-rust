@@ -14,6 +14,7 @@ use mqtt::{TopicName};
 use mqtt::control::variable_header::ConnectReturnCode;
 use clap::{Arg, App};
 use config::read_config;
+use std::sync::mpsc::channel;
 
 
 use yahoo_finance_api as yahoo;
@@ -60,55 +61,78 @@ fn main() {
         .author("Claus Matzinger. <claus.matzinger+kb@gmail.com>")
         .about("Sends data to an MQTT broker")
         .arg(Arg::with_name("ticker_symbol")
+                 .short("s")
+                 .long("symbol")
+                 .help("Get symbol data for this symbol")
+                 .default_value("BTC-USD")
+                 .takes_value(true))
+        .arg(Arg::with_name("config")
                  .short("c")
                  .long("config")
                  .help("Sets a custom config file [default: config.toml]")
-                 .default_value("BTC-USD")
+                 .default_value("config.toml")
                  .takes_value(true))
         .get_matches();
 
-    let ticker_symbol = matches.value_of("ticker_symbol");
-    // let mut f = File::open(config_filename)
-    //     .expect(&format!("Can't open configuration file: {}", config_filename));
-    // let settings = read_config(&mut f).expect("Can't read configuration file.");
-    // println!("Connecting to mqtts://{}", settings.mqtt.broker_address);
+    let cf = matches.value_of("config").unwrap();
+    let mut f = File::open(cf)
+        .expect(&format!("Can't open configuration file: {}", cf));
+    let settings = read_config(&mut f).expect("Can't read configuration file.");
+    println!("Connecting to mqtts://{}", settings.mqtt.broker_address);
 
-    // let topic_name = TopicName::new(settings.mqtt.topic.clone()).unwrap();
+    let topic_name = TopicName::new(settings.mqtt.topic.clone()).unwrap();
 
-    // let mut stream = connect(settings.mqtt.broker_address,
-    //                          settings.mqtt.username,
-    //                          settings.mqtt.password,
-    //                          settings.mqtt.client_id,
-    //                          settings.mqtt.broker);
+    let mut stream = connect(settings.mqtt.broker_address,
+                             settings.mqtt.username,
+                             settings.mqtt.password,
+                             settings.mqtt.client_id,
+                             settings.mqtt.broker);
 
-    let mut i = 0;
-    loop {
-        i += 1;
-        // let msg = format!("{}", i);
-        // println!("Sending message '{}' to topic: '{}'",
-        //          msg,
-        //          settings.mqtt.topic);
-        // publish(&mut stream, msg, topic_name.clone());
-        
-        
 
-        let provider = yahoo::YahooConnector::new();
-    
-        if let Ok(response) = provider.get_latest_quotes(ticker_symbol.unwrap(), "1m") {
-            println!("timestamp {:?}", response.last_quote().unwrap().timestamp);
-            println!("price {:?}", response.last_quote().unwrap().open);
+    let ticker_symbol = matches.value_of("ticker_symbol").unwrap().to_owned();
+    let (tx, rx) = channel();
 
+    let writehandle = thread::spawn(move || {
+        while let Ok(data) = rx.recv() {
+            println!("received: {:?}", data);
         }
+    });
 
-        thread::sleep(Duration::from_millis(3000));
+    let readhandle = thread::spawn(move || {
+        let ts = ticker_symbol;
+        let mut i = 0;
+        loop {
+            i += 1;
+            // let msg = format!("{}", i);
+            // println!("Sending message '{}' to topic: '{}'",
+            //          msg,
+            //          settings.mqtt.topic);
+            // publish(&mut stream, msg, topic_name.clone());
             
-        // get the latest quotes in 1 minute intervals
-        // let response = tokio_test::block_on(provider.get_latest_quotes("AAPL", "1m")).unwrap();
-        // extract just the latest valid quote summery
-        // including timestamp,open,close,high,low,volume
-        // let quote = response.last_quote().unwrap();
-        // let time: DateTime<Utc> =
-        //     DateTime::from(UNIX_EPOCH + Duration::from_secs(quote.timestamp));
-        // println!("At {} quote price of Apple was {}", time.to_rfc3339(), quote.close);
-    }
+            
+    
+            let provider = yahoo::YahooConnector::new();
+        
+            if let Ok(response) = provider.get_latest_quotes(&ts, "1m") {
+                let quote = response.last_quote().unwrap();
+                let data = (quote.timestamp, quote.open);
+                println!("timestamp {:?}", response.last_quote().unwrap().timestamp);
+                println!("price {:?}", response.last_quote().unwrap().open);
+                tx.send(data).unwrap();
+            }
+    
+            thread::sleep(Duration::from_millis(3000));
+                
+            // get the latest quotes in 1 minute intervals
+            // let response = tokio_test::block_on(provider.get_latest_quotes("AAPL", "1m")).unwrap();
+            // extract just the latest valid quote summery
+            // including timestamp,open,close,high,low,volume
+            // let quote = response.last_quote().unwrap();
+            // let time: DateTime<Utc> =
+            //     DateTime::from(UNIX_EPOCH + Duration::from_secs(quote.timestamp));
+            // println!("At {} quote price of Apple was {}", time.to_rfc3339(), quote.close);
+        }
+    });
+
+    readhandle.join().unwrap();
 }
