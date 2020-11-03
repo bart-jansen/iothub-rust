@@ -1,0 +1,7 @@
+[mqtt]
+client_id = "crunchy"
+broker = "dp-oneweek.azure-devices.net"
+broker_address = "dp-oneweek.azure-devices.net:8883"
+username = "dp-oneweek.azure-devices.net/crunchy/api-version=2016-11-14"
+password = "HERE GOES THE SAS"
+topic = "/devices/crunchy/messages/events/"
