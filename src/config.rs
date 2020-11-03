@@ -26,7 +26,7 @@ pub struct MQTT {
     pub topic: String,
 }
 
-pub fn read_config<T: io::Read + Sized>(mut f: T) -> Result<Settings, ConfigError> {
+pub async fn read_config<T: io::Read + Sized>(mut f: T) -> Result<Settings, ConfigError> {
     let mut buffer = String::new();
     f.read_to_string(&mut buffer).map_err(ConfigError::Io)?;
     toml::from_str(&buffer).map_err(ConfigError::Parse)

@@ -14,6 +14,7 @@ clap = "2.33"
 toml = "0.5"
 serde = "1"
 serde_derive = "1"
-yahoo_finance_api = {git="https://github.com/xemwebe/yahoo_finance_api.git", rev="0513343847512be829a1064f26cea7e42d575ebe", features = ["blocking"]}
+yahoo_finance_api = "1.0.2"
 chrono = "0.4"
-anyhow = "1.0.33"
+anyhow = "1.0"
+async-std = {version = "1.6", features = ["unstable", "attributes"]}

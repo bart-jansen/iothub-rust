@@ -6,22 +6,21 @@ use native_tls::{TlsConnector, TlsStream, Protocol};
 use std::io::Write;
 use std::net::TcpStream;
 use std::fs::File;
-use std::thread;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration};
 use mqtt::{Encodable, Decodable};
 use mqtt::packet::*;
 use mqtt::{TopicName};
 use mqtt::control::variable_header::ConnectReturnCode;
 use clap::{Arg, App};
 use config::read_config;
-use std::sync::mpsc::{channel, Sender, Receiver};
 use anyhow::Result;
 
+use async_std::prelude::*;
+use async_std::stream;
 
 use yahoo_finance_api as yahoo;
-use chrono::prelude::*;
 
-fn connect(broker: String,
+async fn connect(broker: String,
            username: String,
            password: String,
            client_id: String,
@@ -48,14 +47,15 @@ fn connect(broker: String,
     Ok(stream)
 }
 
-fn publish(stream: &mut TlsStream<TcpStream>, msg: String, topic: TopicName) {
+async fn publish(stream: &mut TlsStream<TcpStream>, msg: String, topic: TopicName) {
     let packet = PublishPacket::new(topic, QoSWithPacketIdentifier::Level1(10), msg);
     let mut buf = vec![];
     packet.encode(&mut buf).unwrap();
     stream.write_all(&buf).unwrap();
 }
 
-fn main() -> Result<()> {
+#[async_std::main]
+async fn main() {
 
     let matches = App::new("MQTT publisher")
         .version("0.2.0")
@@ -78,51 +78,30 @@ fn main() -> Result<()> {
     let cf = matches.value_of("config").unwrap();
     let mut f = File::open(cf)
         .expect(&format!("Can't open configuration file: {}", cf));
-    let settings = read_config(&mut f).expect("Can't read configuration file.");
+    let settings = read_config(&mut f).await.expect("Can't read configuration file.");
     println!("Connecting to mqtts://{}", settings.mqtt.broker_address);
 
     let topic_name = TopicName::new(settings.mqtt.topic.clone()).unwrap();
 
-    let mut stream = connect(settings.mqtt.broker_address,
+    let mut mqtt_stream = connect(settings.mqtt.broker_address,
                              settings.mqtt.username,
                              settings.mqtt.password,
                              settings.mqtt.client_id,
-                             settings.mqtt.broker)?;
+                             settings.mqtt.broker).await.unwrap();
 
 
     let ticker_symbol = matches.value_of("ticker_symbol").unwrap().to_owned();
-    let (tx, rx): (Sender<(u64, f64)>, Receiver<(u64, f64)>) = channel();
 
-    let writehandle = thread::spawn(move || {
-        while let Ok(data) = rx.recv() {
-            println!("received: {:?}", data);
-            let msg = format!("{{ \"timestamp\": {}, \"open\": {} }}", data.0, data.1);
-            publish(&mut stream, msg, topic_name.clone() );
-        }
-    });
-
-    let readhandle = thread::spawn(move || {
-        let ts = ticker_symbol;
+    let mut interval = stream::interval(Duration::from_millis(1));
+    // WHO CARES? IT COMPILES!!!!!!!
+    while let Some(_) = interval.next().await {
         let provider = yahoo::YahooConnector::new();
-        let mut i = 0;
-        loop {
-            i += 1;
-    
-            if let Ok(response) = provider.get_latest_quotes(&ts, "1m") {
-                let quote = response.last_quote().unwrap();
-                let data = (quote.timestamp, quote.open);
-                println!("timestamp {:?}", response.last_quote().unwrap().timestamp);
-                println!("price {:?}", response.last_quote().unwrap().open);
-                tx.send(data).unwrap();
-            }
-            else {
-                println!("Could not connect to Yahoo")
-            }
-    
-            thread::sleep(Duration::from_millis(3000));
-        }
-    });
-
-    readhandle.join().unwrap();
-    Ok(())
+        if let Ok(response) = provider.get_latest_quotes(&ticker_symbol, "1m").await {
+            let quote = response.last_quote().unwrap();
+            let data = (quote.timestamp, quote.open);
+            let msg = format!("{{ \"timestamp\": {}, \"open\": {} }}", data.0, data.1);
+            //println!("{}", msg);
+            publish(&mut mqtt_stream, msg, topic_name.clone() ).await;
+        }    
+    }
 }
